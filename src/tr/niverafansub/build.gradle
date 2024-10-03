@@ -2,8 +2,8 @@ ext {
     extName = 'Nivera Fansub'
     extClass = '.NiveraFansub'
     themePkg = 'madara'
-    baseUrl = 'https://niverafansub.co'
-    overrideVersionCode = 0
+    baseUrl = 'https://niverafansub.org'
+    overrideVersionCode = 2
     isNsfw = true
 }
 

@@ -8,6 +8,7 @@ import android.os.Looper
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.network.interceptor.rateLimit
@@ -228,27 +229,18 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun pageListParse(document: Document): List<Page> {
         val interfaceName = randomString()
-        val zjsElement = document.selectFirst("script[src*=/zjs/]")
-            ?: throw Exception("ZJS not found")
-        val dataElement = document.selectFirst("#data")
-            ?: throw Exception("Chapter data not found")
-        val minDoc = Document.createShell(document.location())
-        val minDocBody = minDoc.body()
-
-        minDocBody.appendChild(dataElement)
-        minDocBody.append(
+        document.body().prepend(
             """
             <script>
-                const _parse = JSON.parse;
-
-                JSON.parse = function(...args) {
-                    window.$interfaceName.passPayload(args[0]);
-                    return _parse(...args);
+                const _atob = atob;
+                atob = function(arg) {
+                    let data = _atob(arg)
+                    window.$interfaceName.passPayload(data);
+                    return data;
                 };
             </script>
             """.trimIndent(),
         )
-        minDocBody.appendChild(zjsElement)
 
         val handler = Handler(Looper.getMainLooper())
         val latch = CountDownLatch(1)
@@ -264,16 +256,26 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
             innerWv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             innerWv.addJavascriptInterface(jsInterface, interfaceName)
 
+            innerWv.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    url: String?,
+                ): Boolean {
+                    url ?: return true
+                    return !url.contains("/zjs/")
+                }
+            }
+
             innerWv.loadDataWithBaseURL(
                 document.location(),
-                minDoc.outerHtml(),
+                document.outerHtml(),
                 "text/html",
                 "UTF-8",
                 null,
             )
         }
 
-        latch.await(5, TimeUnit.SECONDS)
+        latch.await(10, TimeUnit.SECONDS)
         handler.post { webView?.destroy() }
 
         if (latch.count == 1L) {
@@ -330,10 +332,14 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         @JavascriptInterface
         @Suppress("UNUSED")
         fun passPayload(rawData: String) {
-            val data = json.parseToJsonElement(rawData).jsonObject
+            try {
+                val data = json.parseToJsonElement(rawData).jsonObject
 
-            images = data["imagesLink"]!!.jsonArray.map { it.jsonPrimitive.content }
-            latch.countDown()
+                images = data["imagesLink"]!!.jsonArray.map { it.jsonPrimitive.content }
+                latch.countDown()
+            } catch (_: Exception) {
+                return
+            }
         }
     }
 }

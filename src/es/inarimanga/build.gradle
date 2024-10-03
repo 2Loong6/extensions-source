@@ -1,9 +1,9 @@
 ext {
-    extName = 'InariManga'
+    extName = 'Inari Manga'
     extClass = '.InariManga'
     themePkg = 'mangathemesia'
-    baseUrl = 'https://rukavinari.org'
-    overrideVersionCode = 10
+    baseUrl = 'https://inarimanga.cooksu.net'
+    overrideVersionCode = 12
     isNsfw = true
 }
 

@@ -2,6 +2,8 @@ package eu.kanade.tachiyomi.extension.es.ikigaimangas
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.widget.Toast
+import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import androidx.preference.SwitchPreferenceCompat
 import eu.kanade.tachiyomi.lib.cookieinterceptor.CookieInterceptor
@@ -31,7 +33,15 @@ import kotlin.concurrent.thread
 
 class IkigaiMangas : HttpSource(), ConfigurableSource {
 
-    override val baseUrl: String = "https://visorikigai.net"
+    private val defaultBaseUrl: String = "https://lectorikigai.efope.com"
+    private val isCi = System.getenv("CI") == "true"
+    override val baseUrl: String by lazy {
+        when {
+            isCi -> defaultBaseUrl
+            else -> fetchDomain()
+        }
+    }
+
     private val apiBaseUrl: String = "https://panel.ikigaimangas.com"
 
     override val lang: String = "es"
@@ -40,27 +50,46 @@ class IkigaiMangas : HttpSource(), ConfigurableSource {
     override val supportsLatest: Boolean = true
 
     private val cookieInterceptor = CookieInterceptor(
-        baseUrl.substringAfter("://"),
+        "",
         listOf(
             "data-saving" to "0",
             "nsfw-mode" to "1",
         ),
     )
 
-    override val client = network.cloudflareClient.newBuilder()
-        .rateLimitHost(baseUrl.toHttpUrl(), 1, 2)
-        .rateLimitHost(apiBaseUrl.toHttpUrl(), 2, 1)
-        .addNetworkInterceptor(cookieInterceptor)
-        .build()
+    override val client by lazy {
+        network.cloudflareClient.newBuilder()
+            .rateLimitHost(baseUrl.toHttpUrl(), 1, 2)
+            .rateLimitHost(apiBaseUrl.toHttpUrl(), 2, 1)
+            .addNetworkInterceptor(cookieInterceptor)
+            .build()
+    }
 
     private val preferences: SharedPreferences =
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
 
     override fun headersBuilder() = super.headersBuilder()
-        .add("Origin", baseUrl)
         .add("Referer", "$baseUrl/")
 
     private val json: Json by injectLazy()
+
+    private fun fetchDomain(): String {
+        if (!preferences.fetchDomainPref()) return preferences.getPrefBaseUrl()
+        try {
+            val initClient = network.cloudflareClient
+            val headers = super.headersBuilder().build()
+            val homeDomain = "https://ikigaimangas.com"
+            val document = initClient.newCall(GET(homeDomain, headers)).execute().asJsoup()
+            val scriptUrl = document.selectFirst("div[on:click]:containsOwn(Nuevo dominio)")?.attr("on:click")
+                ?: return defaultBaseUrl
+            val script = initClient.newCall(GET("$homeDomain/build/$scriptUrl", headers)).execute().body.string()
+            val domain = script.substringAfter("window.open(\"").substringBefore("\"")
+            val host = initClient.newCall(GET(domain, headers)).execute().request.url.host
+            return "https://$host"
+        } catch (e: Exception) {
+            return defaultBaseUrl
+        }
+    }
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
@@ -245,9 +274,31 @@ class IkigaiMangas : HttpSource(), ConfigurableSource {
             title = SHOW_NSFW_PREF_TITLE
             setDefaultValue(SHOW_NSFW_PREF_DEFAULT)
         }.also { screen.addPreference(it) }
+
+        SwitchPreferenceCompat(screen.context).apply {
+            key = FETCH_DOMAIN_PREF
+            title = FETCH_DOMAIN_PREF_TITLE
+            summary = FETCH_DOMAIN_PREF_SUMMARY
+            setDefaultValue(FETCH_DOMAIN_PREF_DEFAULT)
+        }.also { screen.addPreference(it) }
+
+        EditTextPreference(screen.context).apply {
+            key = BASE_URL_PREF
+            title = BASE_URL_PREF_TITLE
+            summary = BASE_URL_PREF_SUMMARY
+            dialogTitle = BASE_URL_PREF_TITLE
+            dialogMessage = "URL por defecto:\n$defaultBaseUrl"
+            setDefaultValue(defaultBaseUrl)
+            setOnPreferenceChangeListener { _, _ ->
+                Toast.makeText(screen.context, RESTART_APP_MESSAGE, Toast.LENGTH_LONG).show()
+                true
+            }
+        }.also { screen.addPreference(it) }
     }
 
     private fun SharedPreferences.showNsfwPref() = getBoolean(SHOW_NSFW_PREF, SHOW_NSFW_PREF_DEFAULT)
+    private fun SharedPreferences.getPrefBaseUrl() = getString(BASE_URL_PREF, defaultBaseUrl)!!
+    private fun SharedPreferences.fetchDomainPref() = getBoolean(FETCH_DOMAIN_PREF, FETCH_DOMAIN_PREF_DEFAULT)
 
     private inline fun <reified R> List<*>.firstInstanceOrNull(): R? =
         filterIsInstance<R>().firstOrNull()
@@ -255,8 +306,30 @@ class IkigaiMangas : HttpSource(), ConfigurableSource {
     private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
 
     companion object {
-        const val SHOW_NSFW_PREF = "pref_show_nsfw"
-        const val SHOW_NSFW_PREF_TITLE = "Mostrar contenido NSFW"
-        const val SHOW_NSFW_PREF_DEFAULT = false
+        private const val SHOW_NSFW_PREF = "pref_show_nsfw"
+        private const val SHOW_NSFW_PREF_TITLE = "Mostrar contenido NSFW"
+        private const val SHOW_NSFW_PREF_DEFAULT = false
+
+        private const val BASE_URL_PREF = "overrideBaseUrl"
+        private const val BASE_URL_PREF_TITLE = "Editar URL de la fuente"
+        private const val BASE_URL_PREF_SUMMARY = "Para uso temporal, si la extensión se actualiza se perderá el cambio. No se aplica si se busca el dominio automáticamente."
+        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
+        private const val RESTART_APP_MESSAGE = "Reinicie la aplicación para aplicar los cambios"
+
+        private const val FETCH_DOMAIN_PREF = "fetchDomain"
+        private const val FETCH_DOMAIN_PREF_TITLE = "Buscar dominio automáticamente"
+        private const val FETCH_DOMAIN_PREF_SUMMARY = "Intenta buscar el dominio automáticamente al abrir la fuente."
+        private const val FETCH_DOMAIN_PREF_DEFAULT = true
+    }
+
+    init {
+        preferences.getString(DEFAULT_BASE_URL_PREF, null).let { domain ->
+            if (domain != defaultBaseUrl) {
+                preferences.edit()
+                    .putString(BASE_URL_PREF, defaultBaseUrl)
+                    .putString(DEFAULT_BASE_URL_PREF, defaultBaseUrl)
+                    .apply()
+            }
+        }
     }
 }

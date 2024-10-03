@@ -1,15 +1,14 @@
 package eu.kanade.tachiyomi.extension.en.luascans
 
-import eu.kanade.tachiyomi.multisrc.mangathemesia.MangaThemesia
-import eu.kanade.tachiyomi.network.interceptor.rateLimit
-import okhttp3.OkHttpClient
+import eu.kanade.tachiyomi.multisrc.keyoapp.Keyoapp
 
-class LuaScans : MangaThemesia(
+class LuaScans : Keyoapp(
     "Lua Scans",
-    "https://luascans.com",
+    "https://luacomic.net",
     "en",
 ) {
-    override val client: OkHttpClient = super.client.newBuilder()
-        .rateLimit(4)
-        .build()
+    // migrated from MangaThemesia to Keyoapp
+    override val versionId = 2
+
+    override fun chapterListSelector() = "${super.chapterListSelector()}:not(:has(img[src^='/assets/images/Coin.svg']))"
 }
